@@ -14,7 +14,16 @@ const SAFE_MODE_ALLOWLIST: string[] = [
   'pwd', 'whoami', 'id', 'hostname', 'uname', 'date', 'uptime', 'df', 'du', 'free',
   'ps', 'top', 'htop', 'env', 'echo', 'printf', 'wc', 'sort', 'uniq', 'diff',
   'nproc', 'lscpu', 'lsblk', 'findmnt', 'stat', 'file', 'realpath', 'readlink',
-  'test',
+  'test', 'true', 'false', 'basename', 'dirname', 'sleep',
+
+  // Text processors (read-only) — paired with dangerous-pattern guards
+  // below for awk's system() and sed's e-command escape hatches.
+  'awk', 'gawk', 'mawk', 'sed', 'tr', 'cut', 'column', 'paste', 'nl', 'rev', 'tac',
+  'xxd', 'od', 'fold', 'expand', 'unexpand', 'fmt', 'pr', 'csplit',
+
+  // System / process inspection (read-only)
+  'lsof', 'vmstat', 'iostat', 'mpstat', 'sar', 'pmap', 'pidstat', 'pgrep', 'pstree',
+  'who', 'w', 'last', 'lastlog', 'getent', 'tty',
 
   // Docker (non-destructive)
   'docker ps', 'docker images', 'docker logs', 'docker inspect', 'docker stats',
@@ -30,13 +39,15 @@ const SAFE_MODE_ALLOWLIST: string[] = [
   'npx --version',
 
   // PM2 read-only
-  'pm2 jlist', 'pm2 list', 'pm2 prettylist', 'pm2 show',
+  'pm2 jlist', 'pm2 list', 'pm2 prettylist', 'pm2 show', 'pm2 status',
+  'pm2 info', 'pm2 describe', 'pm2 logs', 'pm2 monit',
 
   // Web server config dumps (read-only)
   'nginx -T', 'nginx -t', 'nginx -v', 'apache2ctl -S', 'apachectl -S', 'httpd -S',
 
   // Network diagnostics
   'ping', 'curl', 'wget', 'netstat', 'ss', 'ip addr', 'ip route', 'ip link',
+  'dig', 'nslookup', 'host', 'traceroute', 'mtr', 'arp',
 
   // Logs
   'journalctl', 'dmesg',
@@ -110,6 +121,15 @@ const DANGEROUS_PATTERNS: RegExp[] = [
   /curl.*\|\s*(ba)?sh/,  // Piping to shell
   /wget.*\|\s*(ba)?sh/,  // Piping to shell
   /:\(\)\s*{\s*:\s*\|\s*:\s*&\s*}\s*;\s*:/,  // Fork bomb
+
+  // awk / gawk / mawk escape hatches — these can spawn arbitrary shells
+  // even from a SAFE-allowlisted invocation.
+  /\b(g|m)?awk\b[^|]*\bsystem\s*\(/,            // awk 'BEGIN{system("…")}'
+  /\b(g|m)?awk\b[^|]*\|\s*&?\s*("|')?(\/bin\/)?(sh|bash|getline)/,  // awk piping into a shell or getline-from-shell
+
+  // sed's "e" command executes shell. Common forms:
+  //   sed 'e cmd'  or  sed '/pat/e cmd'  or  sed '1,5e cmd'
+  /\bsed\b[^|]*['"][^'"]*?\be\s+\S/,
 ];
 
 // Command chaining patterns
