@@ -7,54 +7,191 @@ import { AccessMode, CommandRequest } from '../types/index.js';
 import { CommandValidationError } from '../types/errors.js';
 import { logger } from './logger.js';
 
-// Commands allowed in SAFE mode (allowlist)
+// Commands allowed in SAFE mode (allowlist).
+//
+// PHILOSOPHY: read-only verbs only. Anything that mutates state on the box
+// (creates, modifies, or deletes files; installs or removes packages;
+// starts/stops/restarts services; changes network config) belongs in
+// PROVISION or FULL. Compound commands like `cat > file` are still
+// blocked because isAllowedInSafeMode refuses any fragment that retains
+// a write redirection after stripRedirections().
 const SAFE_MODE_ALLOWLIST: string[] = [
-  // Read operations
+  // ── Filesystem reading & navigation ───────────────────────────────
   'ls', 'cat', 'head', 'tail', 'less', 'more', 'grep', 'find', 'which', 'whereis',
+  'fgrep', 'egrep', 'rgrep', 'locate', 'mlocate',
   'pwd', 'whoami', 'id', 'hostname', 'uname', 'date', 'uptime', 'df', 'du', 'free',
-  'ps', 'top', 'htop', 'env', 'echo', 'printf', 'wc', 'sort', 'uniq', 'diff',
+  'ps', 'top', 'htop', 'env', 'printenv', 'echo', 'printf', 'wc', 'sort', 'uniq', 'diff',
   'nproc', 'lscpu', 'lsblk', 'findmnt', 'stat', 'file', 'realpath', 'readlink',
-  'test', 'true', 'false', 'basename', 'dirname', 'sleep',
+  'basename', 'dirname', 'sleep', 'test', 'true', 'false', 'tty',
 
-  // Text processors (read-only) — paired with dangerous-pattern guards
-  // below for awk's system() and sed's e-command escape hatches.
+  // ── Compressed-file readers ───────────────────────────────────────
+  'zcat', 'zless', 'zmore', 'zgrep', 'zfgrep', 'zegrep',
+  'bzcat', 'bzless', 'bzmore', 'bzgrep',
+  'xzcat', 'xzless', 'xzmore', 'xzgrep',
+  'zstdcat', 'zstdgrep', 'zstdless',
+  'gunzip -l', 'bunzip2 -t', 'xz -l',  // listing/testing only
+
+  // ── Text processors ───────────────────────────────────────────────
+  // awk/sed are paired with dangerous-pattern guards below for their
+  // system()/e-command exec escape hatches.
   'awk', 'gawk', 'mawk', 'sed', 'tr', 'cut', 'column', 'paste', 'nl', 'rev', 'tac',
   'xxd', 'od', 'fold', 'expand', 'unexpand', 'fmt', 'pr', 'csplit',
+  'strings', 'iconv', 'jq', 'yq',
+  'numfmt', 'factor', 'seq',
+  'comm', 'join', 'cmp', 'sdiff', 'diff3',
+  'md5sum', 'sha1sum', 'sha224sum', 'sha256sum', 'sha384sum', 'sha512sum',
+  'cksum', 'b2sum', 'crc32',
 
-  // System / process inspection (read-only)
+  // ── System / hardware / process inspection ────────────────────────
   'lsof', 'vmstat', 'iostat', 'mpstat', 'sar', 'pmap', 'pidstat', 'pgrep', 'pstree',
-  'who', 'w', 'last', 'lastlog', 'getent', 'tty',
+  'who', 'w', 'last', 'lastlog', 'getent', 'finger', 'groups', 'users',
+  'lsmod', 'lspci', 'lsusb', 'lshw', 'dmidecode', 'hwinfo', 'inxi',
+  'hostnamectl', 'localectl', 'timedatectl', 'busctl',
+  'lsattr', 'getfattr', 'getcap',
+  'btop', 'atop', 'glances', 'ncdu', 'duf', 'dust', 'neofetch', 'screenfetch',
 
-  // Docker (non-destructive)
+  // ── Network read-only ─────────────────────────────────────────────
+  'ping', 'ping6', 'curl', 'wget', 'netstat', 'ss', 'ip addr', 'ip route', 'ip link',
+  'ip neigh', 'ip rule', 'ip -s', 'ifconfig', 'route', 'arp', 'arping',
+  'dig', 'nslookup', 'host', 'whois', 'traceroute', 'tracepath', 'mtr',
+  'ethtool', 'iwconfig', 'iwlist',
+  'tcpdump -r', 'tshark -r',  // read-only forms only
+  'ngrep -I',
+  'nstat',
+
+  // ── Logs ──────────────────────────────────────────────────────────
+  'journalctl', 'dmesg', 'logread',
+
+  // ── Service / init status (read-only) ─────────────────────────────
+  'systemctl status', 'systemctl list-units', 'systemctl list-unit-files',
+  'systemctl cat', 'systemctl show', 'systemctl is-active', 'systemctl is-enabled',
+  'systemctl is-failed', 'systemctl is-system-running', 'systemctl list-timers',
+  'systemctl list-sockets', 'systemctl list-dependencies',
+  'service status', 'service --status-all',
+  'chkconfig --list', 'rc-status', 'initctl status',
+
+  // ── Package management — read-only queries ────────────────────────
+  // Debian / Ubuntu
+  'apt list', 'apt show', 'apt search', 'apt policy', 'apt depends', 'apt rdepends',
+  'apt-cache', 'apt-mark showhold', 'apt-mark showmanual', 'apt-mark showauto',
+  'dpkg -l', 'dpkg -L', 'dpkg -S', 'dpkg -p',
+  'dpkg --status', 'dpkg --list', 'dpkg --listfiles', 'dpkg --search',
+  'dpkg --get-selections', 'dpkg --print-architecture',
+  'dpkg-query',
+  // RHEL / Fedora / CentOS
+  'rpm -q', 'rpm -qa', 'rpm -qi', 'rpm -ql', 'rpm -qf', 'rpm -V',
+  'rpm --query', 'rpm --verify',
+  'yum list', 'yum info', 'yum search', 'yum repolist', 'yum check-update',
+  'yum history', 'yum deplist', 'yum provides',
+  'dnf list', 'dnf info', 'dnf search', 'dnf repolist', 'dnf check-update',
+  'dnf history', 'dnf repoquery', 'dnf provides',
+  // openSUSE
+  'zypper se', 'zypper search', 'zypper info', 'zypper lr', 'zypper repos',
+  // Universal package managers
+  'snap list', 'snap info', 'snap find', 'snap version',
+  'flatpak list', 'flatpak info', 'flatpak search', 'flatpak remotes',
+  'brew list', 'brew info', 'brew search', 'brew config', 'brew tap',
+
+  // ── Container / runtime (read-only) ───────────────────────────────
   'docker ps', 'docker images', 'docker logs', 'docker inspect', 'docker stats',
   'docker exec', 'docker top', 'docker port', 'docker version', 'docker info',
-  'docker-compose ps', 'docker-compose logs', 'docker-compose config',
+  'docker history', 'docker diff', 'docker events', 'docker search',
+  'docker container ls', 'docker container inspect', 'docker container logs',
+  'docker container top', 'docker container port', 'docker container stats',
+  'docker image ls', 'docker image inspect', 'docker image history',
+  'docker volume ls', 'docker volume inspect',
+  'docker network ls', 'docker network inspect',
+  'docker system info', 'docker system df', 'docker system events',
+  'docker compose ps', 'docker compose logs', 'docker compose config', 'docker compose top',
+  'docker-compose ps', 'docker-compose logs', 'docker-compose config', 'docker-compose top',
+  'podman ps', 'podman images', 'podman logs', 'podman inspect', 'podman info',
+  'podman top', 'podman port', 'podman stats', 'podman history',
+  'podman volume ls', 'podman network ls', 'podman version',
+  'ctr containers list', 'ctr images list', 'crictl ps', 'crictl images', 'crictl inspect',
 
-  // Git (read operations)
+  // ── Kubernetes (read-only) ────────────────────────────────────────
+  'kubectl get', 'kubectl describe', 'kubectl logs', 'kubectl top', 'kubectl explain',
+  'kubectl version', 'kubectl api-resources', 'kubectl api-versions',
+  'kubectl config view', 'kubectl config get-contexts', 'kubectl config current-context',
+  'kubectl cluster-info', 'kubectl auth can-i',
+  'kubectl events',
+  'helm list', 'helm get', 'helm show', 'helm version', 'helm status',
+  'helm repo list', 'helm history', 'helm env',
+
+  // ── Git (read-only) ───────────────────────────────────────────────
   'git status', 'git log', 'git diff', 'git branch', 'git remote', 'git show',
-  'git ls-files', 'git describe',
+  'git ls-files', 'git describe', 'git rev-parse', 'git rev-list', 'git blame',
+  'git config --list', 'git config --get', 'git config -l', 'git config --get-all',
+  'git reflog', 'git stash list', 'git stash show',
+  'git for-each-ref', 'git cat-file', 'git ls-tree', 'git ls-remote',
+  'git tag', 'git show-branch', 'git shortlog', 'git count-objects',
+  'git bisect log', 'git remote show', 'git remote -v',
+  'git fsck',  // integrity check, read-only
 
-  // Node/NPM (non-install)
-  'node --version', 'npm --version', 'npm list', 'npm outdated', 'npm audit',
-  'npx --version',
+  // ── Language ecosystems — version / list / show / search ──────────
+  // Node / npm / yarn / pnpm
+  'node --version', 'node -v',
+  'npm --version', 'npm -v',
+  'npm list', 'npm ls', 'npm outdated', 'npm audit', 'npm view', 'npm info',
+  'npm explain', 'npm fund', 'npm config get', 'npm ping', 'npm whoami',
+  'npm root', 'npm prefix', 'npm bin',
+  'npx --version', 'npx -v',
+  'yarn --version', 'yarn -v',
+  'yarn list', 'yarn info', 'yarn why', 'yarn versions', 'yarn licenses ls',
+  'pnpm --version', 'pnpm -v',
+  'pnpm list', 'pnpm ls', 'pnpm why', 'pnpm outdated', 'pnpm audit', 'pnpm config get',
+  // Python
+  'python --version', 'python -V', 'python3 --version', 'python3 -V',
+  'pip --version', 'pip3 --version',
+  'pip list', 'pip show', 'pip freeze', 'pip check', 'pip config list',
+  'pip3 list', 'pip3 show', 'pip3 freeze', 'pip3 check', 'pip3 config list',
+  'conda list', 'conda info', 'conda search', 'conda env list',
+  'pipx list', 'poetry --version', 'poetry show', 'poetry env info',
+  // PHP / Composer
+  'php --version', 'php -v', 'php -i', 'php -m',
+  'composer --version', 'composer show', 'composer info', 'composer status',
+  'composer depends', 'composer outdated', 'composer licenses',
+  // Ruby / Gem / Bundler
+  'ruby --version', 'ruby -v',
+  'gem --version', 'gem list', 'gem info', 'gem which', 'gem env',
+  'bundle --version', 'bundle show', 'bundle list', 'bundle info',
+  'bundle outdated', 'bundle check', 'bundle env',
+  // Go
+  'go version', 'go env', 'go list', 'go doc', 'go vet',
+  'go mod graph', 'go mod why', 'go mod verify',
+  // Rust
+  'cargo --version', 'cargo -V', 'cargo tree', 'cargo info', 'cargo metadata',
+  'cargo search', 'rustc --version', 'rustup show',
+  // Java
+  'java --version', 'java -version', 'javac --version', 'mvn --version',
+  'mvn dependency:tree', 'mvn help:effective-pom', 'gradle --version',
 
-  // PM2 read-only
+  // ── PM2 read-only ─────────────────────────────────────────────────
   'pm2 jlist', 'pm2 list', 'pm2 prettylist', 'pm2 show', 'pm2 status',
-  'pm2 info', 'pm2 describe', 'pm2 logs', 'pm2 monit',
+  'pm2 info', 'pm2 describe', 'pm2 logs', 'pm2 monit', 'pm2 env',
+  'pm2 ping', 'pm2 conf', 'pm2 dump',
 
-  // Web server config dumps (read-only)
-  'nginx -T', 'nginx -t', 'nginx -v', 'apache2ctl -S', 'apachectl -S', 'httpd -S',
+  // ── Web servers (config dumps / version) ──────────────────────────
+  'nginx -T', 'nginx -t', 'nginx -v', 'nginx -V',
+  'apache2ctl -S', 'apache2ctl -v', 'apache2ctl -V',
+  'apachectl -S', 'apachectl -v', 'apachectl -V',
+  'httpd -S', 'httpd -v', 'httpd -V', 'httpd -t', 'httpd -M',
+  'caddy version', 'caddy list-modules', 'caddy environ',
 
-  // Network diagnostics
-  'ping', 'curl', 'wget', 'netstat', 'ss', 'ip addr', 'ip route', 'ip link',
-  'dig', 'nslookup', 'host', 'traceroute', 'mtr', 'arp',
+  // ── Database CLIs — version / read-only meta ──────────────────────
+  // We DO NOT include bare `mysql`, `psql`, `redis-cli` etc. because
+  // they take execute-flags (e.g. mysql -e 'DROP TABLE'). Only version
+  // / status / read-only metadata commands are allowlisted.
+  'mysql --version', 'mysql -V',
+  'psql --version', 'psql -V',
+  'redis-cli --version', 'redis-cli -v', 'redis-cli PING', 'redis-cli INFO',
+  'redis-cli DBSIZE',
+  'mongosh --version', 'mongo --version',
+  'sqlite3 --version', 'sqlite3 -version',
 
-  // Logs
-  'journalctl', 'dmesg',
-
-  // Service status (read-only)
-  'systemctl status', 'systemctl list-units', 'systemctl list-unit-files',
-  'systemctl cat', 'systemctl show', 'service status',
+  // ── Disk / filesystem free-space tools ────────────────────────────
+  // (df / du already up top; these are additional ones)
+  'duf', 'dust', 'ncdu',
 ];
 
 // Commands that require PROVISION mode
@@ -246,11 +383,23 @@ export class CommandValidator {
   }
 
   /**
-   * Check if command is in SAFE mode allowlist
+   * Check if command is in SAFE mode allowlist.
+   *
+   * Refuses SAFE classification when the command writes to the filesystem.
+   * stripRedirections() leaves write redirections in place precisely so we
+   * can detect them here. Without this check, `cat > /etc/passwd` would be
+   * allowed in SAFE just because `cat` is on the read-only list.
    */
   isAllowedInSafeMode(command: string): boolean {
+    // Any surviving write redirection disqualifies SAFE.
+    //   >>  ─ append
+    //   &>  ─ stdout+stderr to file
+    //   >   ─ output redirect (but NOT >& which is fd-to-fd)
+    if (/>>\s*\S+/.test(command)) return false;
+    if (/&>\s*\S+/.test(command)) return false;
+    if (/>(?!&)/.test(command)) return false;
+
     const normalizedCommand = command.toLowerCase().trim();
-    
     return SAFE_MODE_ALLOWLIST.some(allowed => {
       const normalizedAllowed = allowed.toLowerCase();
       return (
@@ -277,17 +426,25 @@ export class CommandValidator {
   }
 
   /**
-   * Check if command requires FULL mode
+   * Check if command requires FULL mode.
+   *
+   * Match policy: exact, prefix-with-space, or `sudo `-prefixed. We
+   * deliberately do NOT use .includes() — that was a long-standing
+   * over-match bug that flagged any command containing 'su' as a
+   * substring (md5**su**m, fdi**su**se, etc.) as FULL. Embedded uses
+   * inside wrappers like `docker exec` are still caught by the
+   * wrapper-aware scan in modeForSingleCommand(); destructive patterns
+   * like `rm -rf /`, `dd of=/dev/*`, fork bombs, awk system(), sed
+   * e-command, and curl|sh are caught by the dangerous-pattern regexes.
    */
   requiresFullMode(command: string): boolean {
     const normalizedCommand = command.toLowerCase().trim();
-    
     return FULL_MODE_ONLY_COMMANDS.some(full => {
       const normalizedFull = full.toLowerCase();
       return (
         normalizedCommand === normalizedFull ||
         normalizedCommand.startsWith(normalizedFull + ' ') ||
-        normalizedCommand.includes(normalizedFull)
+        normalizedCommand.startsWith('sudo ' + normalizedFull)
       );
     });
   }
@@ -360,18 +517,23 @@ export class CommandValidator {
   }
 
   /**
-   * Strip shell redirections from a single command fragment so the
-   * remaining token is the actual program + args we want to validate.
-   * Handles: 2>/dev/null, 2>&1, > file, >> file, < file, 2> file, &> file.
+   * Strip shell redirections that DON'T touch the filesystem from a
+   * single command fragment. Only the noop / discard forms are stripped:
+   *
+   *   N>&M           fd-to-fd redirect, no real I/O target
+   *   N>/dev/null    discarded
+   *   < file         stdin read (input only)
+   *
+   * Writes (> file, >> file, &> file) are deliberately LEFT in place so
+   * isAllowedInSafeMode() can see them and refuse SAFE classification.
+   * Otherwise `cat > /etc/passwd` would be allowed in SAFE just because
+   * `cat` is on the read-only allowlist.
    */
   private stripRedirections(frag: string): string {
     return frag
-      .replace(/&>\s*\S+/g, '')           // &> file
-      .replace(/\d*>>\s*\S+/g, '')        // >> file or N>> file
-      .replace(/\d*>&\d+/g, '')           // N>&M  (e.g. 2>&1)
-      .replace(/\d*>\s*\/dev\/null/g, '') // N>/dev/null
-      .replace(/\d*>\s*\S+/g, '')         // N> file or > file
-      .replace(/\s+<\s*\S+/g, '')         // < file
+      .replace(/\d*>&\d+/g, '')                    // N>&M  (e.g. 2>&1)
+      .replace(/\d*>\s*\/dev\/null\b/g, '')        // N>/dev/null
+      .replace(/\s+<\s*\S+/g, '')                  // < file (stdin read)
       .trim();
   }
 
