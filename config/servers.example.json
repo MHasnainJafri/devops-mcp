@@ -1,0 +1,86 @@
+{
+  "$schema": "./servers.schema.json",
+  "servers": [
+    {
+      "id": "production-web",
+      "name": "Production Web Server",
+      "host": "192.168.1.100",
+      "port": 22,
+      "username": "ubuntu",
+      "authType": "key",
+      "keyFile": "production.pem",
+      "role": "production",
+      "restrictions": {
+        "allowedModes": ["SAFE"],
+        "blockedCommands": ["rm -rf", "shutdown", "reboot", "dd"],
+        "allowedPaths": ["/var/www", "/home/ubuntu"],
+        "requireApproval": true
+      },
+      "description": "Main production web server - BE CAREFUL"
+    },
+    {
+      "id": "staging-web",
+      "name": "Staging Server",
+      "host": "192.168.1.101",
+      "port": 22,
+      "username": "ubuntu",
+      "authType": "key",
+      "keyFile": "staging.pem",
+      "role": "staging",
+      "restrictions": {
+        "allowedModes": ["SAFE", "PROVISION"],
+        "blockedCommands": ["rm -rf /"],
+        "requireApproval": false
+      },
+      "description": "Staging environment for testing"
+    },
+    {
+      "id": "dev-server",
+      "name": "Development Server (Key Auth)",
+      "host": "192.168.1.102",
+      "port": 22,
+      "username": "root",
+      "authType": "key",
+      "keyFile": "dev.pem",
+      "role": "development",
+      "restrictions": {
+        "allowedModes": ["SAFE", "PROVISION", "FULL"],
+        "blockedCommands": [],
+        "requireApproval": false
+      },
+      "description": "Development sandbox with SSH key"
+    },
+    {
+      "id": "dev-password",
+      "name": "Development Server (Password Auth)",
+      "host": "192.168.1.103",
+      "port": 22,
+      "username": "admin",
+      "authType": "password",
+      "password": "$DEV_SERVER_PASSWORD",
+      "role": "development",
+      "restrictions": {
+        "allowedModes": ["SAFE", "PROVISION", "FULL"],
+        "blockedCommands": [],
+        "requireApproval": false
+      },
+      "description": "Dev server with password auth - set DEV_SERVER_PASSWORD env var"
+    },
+    {
+      "id": "test-server",
+      "name": "Test Server (Password via env var)",
+      "host": "192.168.1.104",
+      "port": 22,
+      "username": "testuser",
+      "authType": "password",
+      "password": "$TEST_SERVER_PASSWORD",
+      "role": "testing",
+      "restrictions": {
+        "allowedModes": ["SAFE", "PROVISION"],
+        "blockedCommands": [],
+        "requireApproval": false
+      },
+      "description": "Test server with password from $TEST_SERVER_PASSWORD env var. Never commit literal passwords to server.json."
+    }
+  ]
+}

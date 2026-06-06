@@ -1,0 +1,53 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# SSH Keys (NEVER commit)
+*.pem
+*.key
+id_rsa*
+id_ed25519*
+
+# Per-server config folders contain real credentials and scan profiles.
+# Only the _example template is meant to be tracked.
+config/*/
+!config/_example/
+
+# Claude Code workspace metadata
+.claude/
+
+# Session state (last-connected serverId etc.)
+.last-session.json
+
+# Session data
+# sessions/
+# .sessions/
+
+# Test coverage
+coverage/
+
+# Temporary files
+tmp/
+temp/

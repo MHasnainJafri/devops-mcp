@@ -1,0 +1,92 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "DevOps MCP Server Configuration",
+  "description": "Configuration file for SSH server connections",
+  "type": "object",
+  "required": ["servers"],
+  "properties": {
+    "servers": {
+      "type": "array",
+      "description": "List of configured servers",
+      "items": {
+        "type": "object",
+        "required": ["id", "name", "host", "username", "role"],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Unique identifier for the server",
+            "pattern": "^[a-z0-9-]+$"
+          },
+          "name": {
+            "type": "string",
+            "description": "Human-readable server name"
+          },
+          "host": {
+            "type": "string",
+            "description": "Server hostname or IP address"
+          },
+          "port": {
+            "type": "integer",
+            "default": 22,
+            "description": "SSH port"
+          },
+          "username": {
+            "type": "string",
+            "description": "SSH username"
+          },
+          "authType": {
+            "type": "string",
+            "enum": ["key", "password"],
+            "default": "key",
+            "description": "Authentication type: 'key' for SSH key, 'password' for username/password"
+          },
+          "keyFile": {
+            "type": "string",
+            "description": "Name of the private key file in config/keys/ folder (for authType: key)"
+          },
+          "password": {
+            "type": "string",
+            "description": "SSH password (for authType: password) - consider using environment variable reference like $ENV_VAR"
+          },
+          "role": {
+            "type": "string",
+            "enum": ["production", "staging", "development", "testing"],
+            "description": "Server role - determines default restrictions"
+          },
+          "restrictions": {
+            "type": "object",
+            "description": "Access restrictions for this server",
+            "properties": {
+              "allowedModes": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": ["SAFE", "PROVISION", "FULL"]
+                },
+                "description": "Which access modes are allowed for this server"
+              },
+              "blockedCommands": {
+                "type": "array",
+                "items": { "type": "string" },
+                "description": "Commands that are always blocked on this server"
+              },
+              "allowedPaths": {
+                "type": "array",
+                "items": { "type": "string" },
+                "description": "Paths where commands can be executed (optional)"
+              },
+              "requireApproval": {
+                "type": "boolean",
+                "description": "Require human approval for all commands"
+              }
+            }
+          },
+          "description": {
+            "type": "string",
+            "description": "Notes about this server"
+          }
+        }
+      }
+    }
+  }
+}
