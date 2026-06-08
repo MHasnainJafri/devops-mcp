@@ -23,6 +23,8 @@ const SAFE_MODE_ALLOWLIST: string[] = [
   'ps', 'top', 'htop', 'env', 'printenv', 'echo', 'printf', 'wc', 'sort', 'uniq', 'diff',
   'nproc', 'lscpu', 'lsblk', 'findmnt', 'stat', 'file', 'realpath', 'readlink',
   'basename', 'dirname', 'sleep', 'test', 'true', 'false', 'tty',
+  // Shell builtins for navigation (read-only)
+  'cd', 'pushd', 'popd', 'dirs',
 
   // ── Compressed-file readers ───────────────────────────────────────
   'zcat', 'zless', 'zmore', 'zgrep', 'zfgrep', 'zegrep',
@@ -543,7 +545,12 @@ export class CommandValidator {
    * Appends warnings about embedded-token escalation to the passed array.
    */
   private modeForSingleCommand(command: string, warnings: string[]): AccessMode {
-    let mode = this.getRequiredMode(command);
+    // Strip global flags so `git -C /p remote -v` validates as `git remote -v`,
+    // `kubectl -n prod get pods` as `kubectl get pods`, etc. The original
+    // string still runs on the shell — only the validation lookup uses the
+    // normalized form.
+    const normalized = this.normalizeForValidation(command);
+    let mode = this.getRequiredMode(normalized);
 
     const WRAPPER_PREFIXES = ['docker exec', 'sudo', 'bash -c', 'sh -c', 'env'];
     const isWrapped = WRAPPER_PREFIXES.some(w =>
@@ -562,6 +569,52 @@ export class CommandValidator {
       }
     }
     return mode;
+  }
+
+  /**
+   * Strip global / context flags from common tools so the SAFE/PROVISION/FULL
+   * prefix checks see the canonical "tool subcommand" form. Without this,
+   *   `git -C /home/proj remote -v`     wouldn't prefix-match `git remote`
+   *   `kubectl -n prod get pods`        wouldn't prefix-match `kubectl get`
+   *   `helm --namespace prod list`      wouldn't prefix-match `helm list`
+   * and they'd all default to PROVISION just for using a working-directory
+   * or namespace flag.
+   */
+  private normalizeForValidation(command: string): string {
+    const trimmed = command.trim();
+    const tool = trimmed.split(/\s+/)[0]?.toLowerCase();
+    if (!tool) return trimmed;
+
+    let result = trimmed;
+    for (let pass = 0; pass < 6; pass++) {  // multiple flags can stack
+      const before = result;
+      if (tool === 'git') {
+        result = result.replace(/^(git)\s+-C\s+\S+/i, '$1');
+        result = result.replace(/^(git)\s+--git-dir(?:=|\s+)\S+/i, '$1');
+        result = result.replace(/^(git)\s+--work-tree(?:=|\s+)\S+/i, '$1');
+        result = result.replace(/^(git)\s+-c\s+\S+/i, '$1');
+        result = result.replace(/^(git)\s+--no-pager\b/i, '$1');
+      } else if (tool === 'kubectl') {
+        result = result.replace(/^(kubectl)\s+-n\s+\S+/i, '$1');
+        result = result.replace(/^(kubectl)\s+--namespace(?:=|\s+)\S+/i, '$1');
+        result = result.replace(/^(kubectl)\s+--context(?:=|\s+)\S+/i, '$1');
+        result = result.replace(/^(kubectl)\s+--kubeconfig(?:=|\s+)\S+/i, '$1');
+        result = result.replace(/^(kubectl)\s+--cluster(?:=|\s+)\S+/i, '$1');
+        result = result.replace(/^(kubectl)\s+--user(?:=|\s+)\S+/i, '$1');
+        result = result.replace(/^(kubectl)\s+--as(?:=|\s+)\S+/i, '$1');
+      } else if (tool === 'helm') {
+        result = result.replace(/^(helm)\s+-n\s+\S+/i, '$1');
+        result = result.replace(/^(helm)\s+--namespace(?:=|\s+)\S+/i, '$1');
+        result = result.replace(/^(helm)\s+--kube-context(?:=|\s+)\S+/i, '$1');
+        result = result.replace(/^(helm)\s+--kubeconfig(?:=|\s+)\S+/i, '$1');
+      } else if (tool === 'docker') {
+        result = result.replace(/^(docker)\s+--context(?:=|\s+)\S+/i, '$1');
+        result = result.replace(/^(docker)\s+-H\s+\S+/i, '$1');
+        result = result.replace(/^(docker)\s+--host(?:=|\s+)\S+/i, '$1');
+      }
+      if (result === before) break;
+    }
+    return result.replace(/\s+/g, ' ').trim();
   }
 
   /**
