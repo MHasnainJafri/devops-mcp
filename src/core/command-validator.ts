@@ -326,24 +326,40 @@ export class CommandValidator {
       result.requiredMode = AccessMode.FULL;
     }
 
-    // Command substitution — $(...) and backticks — still escalates. We
-    // can't statically know what runs inside, so treat it as worst-case.
-    if (/\$\(|`[^`]+`/.test(command)) {
-      result.warnings.push('Command substitution ($(...) or backticks) — contents are opaque to the validator.');
-      result.requiredMode = AccessMode.FULL;
+    // Command substitution — recursively validate the contents of every
+    // $(...) and `...`, take the max mode. This replaces the older blanket
+    // "any substitution → FULL" rule, which was too pessimistic: a polling
+    // loop like
+    //   for i in 1 2 3; do code=$(docker ps); echo $code; done
+    // is genuinely read-only when both the outer scaffolding and the
+    // substitutions are read-only.
+    const { inner: innerSubstitutions, outer: commandWithoutSubs } =
+      this.analyzeSubstitutions(command);
+    for (const sub of innerSubstitutions) {
+      const subResult = this.validate({ command: sub.trim() }, currentMode);
+      if (this.modeLevel(subResult.requiredMode) > this.modeLevel(result.requiredMode)) {
+        result.requiredMode = subResult.requiredMode;
+      }
+      for (const w of subResult.warnings) {
+        result.warnings.push(`(inside $(...)) ${w}`);
+      }
     }
 
     // Split into fragments on top-level shell operators (; && || |, &-bg)
-    // and validate each one independently. The required mode for the whole
-    // line is the max required by any fragment. A chain of all-SAFE
-    // commands stays SAFE — read-only diagnostics like
-    //   `du -sh /opt/* ; echo --- ; df -h /`
-    // don't suddenly need root.
-    const fragments = this.splitCommand(command)
+    // and validate each one independently. We use `commandWithoutSubs`
+    // (substitutions replaced by "") so the splitter doesn't get confused
+    // by chain-operators inside $().
+    const fragments = this.splitCommand(commandWithoutSubs)
       .map(f => this.stripRedirections(f).trim())
       .filter(Boolean);
     let chainMode = AccessMode.SAFE;
     for (const frag of fragments) {
+      // Bash control-flow keywords (for, while, do, done, if, then, fi,
+      // case, esac, break, continue, return, exit, …) and bare variable
+      // assignments (var=value) execute no external program, so they're
+      // implicitly SAFE.
+      if (this.isBashControlFlow(frag) || this.isVariableAssignment(frag)) continue;
+
       const fragMode = this.modeForSingleCommand(frag, result.warnings);
       if (this.modeLevel(fragMode) > this.modeLevel(chainMode)) {
         chainMode = fragMode;
@@ -569,6 +585,109 @@ export class CommandValidator {
       }
     }
     return mode;
+  }
+
+  /**
+   * Walk the command and extract every $(...) and `...` substitution
+   * (recursively). Returns inner expressions + the outer command with each
+   * substitution replaced by "" — so the rest of the validator can split
+   * on `;`/`&&`/`||`/`|` without getting confused by operators inside a
+   * substitution. Respects single/double quote contexts.
+   */
+  private analyzeSubstitutions(command: string): { inner: string[]; outer: string } {
+    const inner: string[] = [];
+    let outer = '';
+    let i = 0;
+    let inSingle = false;
+    let inDouble = false;
+    while (i < command.length) {
+      const c = command[i];
+      const next = command[i + 1];
+      if (inSingle) {
+        if (c === "'") inSingle = false;
+        outer += c; i++; continue;
+      }
+      if (inDouble) {
+        if (c === '\\' && next !== undefined) { outer += c + next; i += 2; continue; }
+        if (c === '"') { inDouble = false; outer += c; i++; continue; }
+        // Double quotes DO honor $(...) and `...` — fall through.
+      }
+      if (!inDouble && c === "'") { inSingle = true; outer += c; i++; continue; }
+      if (!inSingle && !inDouble && c === '"') { inDouble = true; outer += c; i++; continue; }
+
+      // $(...) — must support nesting + quotes inside.
+      if (c === '$' && next === '(') {
+        let depth = 1;
+        let j = i + 2;
+        let iS = false, iD = false;
+        while (j < command.length && depth > 0) {
+          const ic = command[j];
+          if (iS) {
+            if (ic === "'") iS = false;
+          } else if (iD) {
+            if (ic === '\\' && j + 1 < command.length) { j += 2; continue; }
+            if (ic === '"') iD = false;
+          } else {
+            if (ic === "'") iS = true;
+            else if (ic === '"') iD = true;
+            else if (ic === '(') depth++;
+            else if (ic === ')') depth--;
+          }
+          if (depth > 0) j++;
+        }
+        if (depth === 0) {
+          const innerExpr = command.substring(i + 2, j);
+          inner.push(innerExpr);
+          const nested = this.analyzeSubstitutions(innerExpr);
+          inner.push(...nested.inner);
+          outer += '""';
+          i = j + 1;
+          continue;
+        }
+      }
+      // `...` — POSIX backticks don't nest.
+      if (c === '`') {
+        let j = i + 1;
+        while (j < command.length && command[j] !== '`') {
+          if (command[j] === '\\' && j + 1 < command.length) { j += 2; continue; }
+          j++;
+        }
+        if (j < command.length) {
+          inner.push(command.substring(i + 1, j));
+          outer += '""';
+          i = j + 1;
+          continue;
+        }
+      }
+      outer += c;
+      i++;
+    }
+    return { inner, outer };
+  }
+
+  /**
+   * Bash control-flow keywords. A fragment whose first token is one of
+   * these doesn't execute an external program by itself.
+   */
+  private static readonly BASH_KEYWORDS = new Set([
+    'for', 'while', 'until', 'select', 'do', 'done',
+    'if', 'then', 'else', 'elif', 'fi',
+    'case', 'esac', 'in', 'function',
+    'break', 'continue', 'return', 'exit',
+    '{', '}', '[[', ']]', ':',
+  ]);
+
+  private isBashControlFlow(fragment: string): boolean {
+    const first = fragment.trim().split(/\s+/)[0];
+    return CommandValidator.BASH_KEYWORDS.has(first);
+  }
+
+  /**
+   * Bare variable assignments like `code=value` or `MY_VAR="hello"`
+   * don't execute external programs.
+   */
+  private isVariableAssignment(fragment: string): boolean {
+    return /^[a-zA-Z_][a-zA-Z0-9_]*=/.test(fragment.trim());
   }
 
   /**
