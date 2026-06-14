@@ -389,6 +389,35 @@ you set:
 The handler validates **exactly one** key source per call. Combining e.g.
 `useExistingKey` and `keyFilePath` is refused with a clear error.
 
+Any key path (`keyFilePath` / `externalKeyPath`) accepts an optional
+`keyPassphrase` (literal or `$ENV_VAR`) for encrypted private keys.
+
+### AWS EC2 (the `.pem` case)
+
+You get a `.pem` file, a username (`ubuntu`, `ec2-user`, `admin`, …), and
+a public IP/DNS. Two ways:
+
+```jsonc
+// Reference the .pem where it sits (recommended — nothing copied)
+{
+  "id": "my-ec2", "host": "ec2-1-2-3-4.compute.amazonaws.com",
+  "username": "ec2-user", "authType": "key",
+  "externalKeyPath": "C:\\Users\\you\\Downloads\\my-key.pem",
+  "role": "production"
+}
+
+// Or copy the .pem into the server's config folder (portable bundle)
+{
+  "id": "my-ec2", "host": "1.2.3.4", "username": "ubuntu",
+  "authType": "key",
+  "keyFilePath": "C:\\Users\\you\\Downloads\\my-key.pem",
+  "role": "staging"
+}
+```
+
+Most AWS keys have no passphrase — omit `keyPassphrase`. If yours is
+encrypted, add `"keyPassphrase": "$MY_PEM_PASS"` and set that env var.
+
 > **Modern sshd + password auth**: ssh2 needs `tryKeyboard: true` for sshd
 > setups that use PAM (Ubuntu 22.04+, Debian 12, Amazon Linux 2023, RHEL 9).
 > devops-mcp sets this automatically — passwords work even when the server

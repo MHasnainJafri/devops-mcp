@@ -552,6 +552,7 @@ export async function handleAddServer(
     authType: input.authType,
     keyFile: keyFileName,
     externalKeyPath: resolvedExternalPath,
+    keyPassphrase: input.authType === 'key' ? input.keyPassphrase : undefined,
     password: input.authType === 'password' ? input.password : undefined,
     role: input.role,
     description: input.description,
@@ -906,6 +907,7 @@ export async function handleUpdateServerCredentials(
     delete raw.password;
     delete raw.keyFile;
     delete raw.externalKeyPath;
+    delete raw.keyPassphrase;
     if (newAuthType === 'password') {
       raw.password = input.password;
     } else {
@@ -914,7 +916,11 @@ export async function handleUpdateServerCredentials(
       } else if (keyFileName) {
         raw.keyFile = keyFileName;
       }
+      if (input.keyPassphrase) raw.keyPassphrase = input.keyPassphrase;
     }
+  } else if (input.keyPassphrase !== undefined && raw.authType === 'key') {
+    // Allow updating just the passphrase without changing the key itself.
+    raw.keyPassphrase = input.keyPassphrase;
   }
 
   // 5. Place new key file on disk (only for copy / inline flows).
@@ -1147,6 +1153,7 @@ export async function handleTestConnection(
       sshConfig.password = authInfo.password;
     } else {
       sshConfig.privateKeyPath = authInfo.keyPath;
+      if (authInfo.passphrase) sshConfig.passphrase = authInfo.passphrase;
     }
 
     const testExecutor = new SSHExecutor({ ssh: sshConfig });
@@ -1248,6 +1255,7 @@ export async function handleConnectServer(
       sshConfig.password = authInfo.password;
     } else {
       sshConfig.privateKeyPath = authInfo.keyPath;
+      if (authInfo.passphrase) sshConfig.passphrase = authInfo.passphrase;
     }
 
     sshExecutor = new SSHExecutor({ ssh: sshConfig });

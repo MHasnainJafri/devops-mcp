@@ -239,8 +239,9 @@ export const AddServerSchema = z.object({
   password: z.string().optional().describe('For authType=password. Literal string OR $ENV_VAR reference. Prefer the env var form.'),
   keyFilePath: z.string().optional().describe('For authType=key. Path to a private key on the local machine to be COPIED into config/<id>/. Use this when you want the key to live alongside the server config.'),
   privateKey: z.string().optional().describe('For authType=key. Inline private key contents (PEM). Will be written to config/<id>/key.pem.'),
-  externalKeyPath: z.string().optional().describe('For authType=key. Absolute path to your existing workstation key (e.g. ~/.ssh/id_ed25519). The key is NOT copied — we point at it. Best option when you already have a key set up on the server.'),
+  externalKeyPath: z.string().optional().describe('For authType=key. Absolute path to your existing workstation key (e.g. ~/.ssh/id_ed25519 or an AWS .pem). The key is NOT copied — we point at it. Best option when you already have a key set up on the server.'),
   useExistingKey: z.boolean().default(false).describe('For authType=key. Auto-detect your default workstation key from ~/.ssh (ed25519 → ecdsa → rsa) and use it without copying. The easiest option when you ran ssh-copy-id beforehand.'),
+  keyPassphrase: z.string().optional().describe('For authType=key. Passphrase if the private key is encrypted. Literal or $ENV_VAR reference (prefer the env var). Most AWS .pem keys have no passphrase — omit this then.'),
   role: z.enum(['production', 'staging', 'development', 'testing']).describe(
     'Server role (REQUIRED — no default). Drives default mode and blocklist. ASK THE USER before setting this. Consequences: ' +
     'production → only SAFE mode allowed by default, requireApproval=true, destructive verbs blocked, all writes need the production write-gate (consentToken + acknowledgeProductionWrite). ' +
@@ -312,6 +313,7 @@ export const UpdateServerCredentialsSchema = z.object({
   privateKey: z.string().optional().describe('For authType=key. Inline key content; written to config/<id>/key.pem.'),
   externalKeyPath: z.string().optional().describe('For authType=key. Path to an existing key; NOT copied (just referenced).'),
   useExistingKey: z.boolean().default(false).describe('For authType=key. Auto-find ~/.ssh/id_ed25519 / ecdsa / rsa.'),
+  keyPassphrase: z.string().optional().describe('For authType=key. Passphrase if the new key is encrypted. Literal or $ENV_VAR reference.'),
   autoTest: z.boolean().default(true).describe('Test the new credentials before saving. Default true.'),
   consentToken: z.string().optional().describe('Required when the server role is production.'),
 });

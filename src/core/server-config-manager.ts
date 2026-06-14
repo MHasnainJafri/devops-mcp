@@ -45,6 +45,8 @@ export interface ServerConfig {
   externalKeyPath?: string;    // Absolute path to a key we DON'T copy
                                // (e.g. ~/.ssh/id_ed25519). Preferred for
                                // personal workstation keys.
+  keyPassphrase?: string;      // Passphrase for an encrypted private key.
+                               // Literal or $ENV_VAR reference.
   password?: string;           // Literal or $ENV_VAR reference
   role: 'production' | 'staging' | 'development' | 'testing';
   restrictions: ServerRestrictions;
@@ -262,25 +264,37 @@ export class ServerConfigManager {
   }
 
   /**
+   * Resolve a possibly-$ENV_VAR value to its literal. Returns null when an
+   * env reference is set but the variable is empty/undefined.
+   */
+  private resolveSecret(value: string | undefined): string | null {
+    if (!value) return null;
+    if (value.startsWith('$')) {
+      return process.env[value.substring(1)] || null;
+    }
+    return value;
+  }
+
+  /**
    * Get password for a server (resolves environment variables)
    */
   getPassword(serverId: string): string | null {
     const server = this.getServer(serverId);
-    if (!server || !server.password) return null;
+    return this.resolveSecret(server?.password);
+  }
 
-    // Check if password is an environment variable reference
-    if (server.password.startsWith('$')) {
-      const envVar = server.password.substring(1);
-      return process.env[envVar] || null;
-    }
-
-    return server.password;
+  /**
+   * Get the passphrase for an encrypted private key (resolves $ENV_VAR).
+   */
+  getKeyPassphrase(serverId: string): string | null {
+    const server = this.getServer(serverId);
+    return this.resolveSecret(server?.keyPassphrase);
   }
 
   /**
    * Get auth info for connecting to a server
    */
-  getAuthInfo(serverId: string): { type: 'key' | 'password'; keyPath?: string; password?: string } | null {
+  getAuthInfo(serverId: string): { type: 'key' | 'password'; keyPath?: string; password?: string; passphrase?: string } | null {
     const server = this.getServer(serverId);
     if (!server) return null;
 
@@ -292,7 +306,8 @@ export class ServerConfigManager {
 
     const keyPath = this.getKeyPath(serverId);
     if (!keyPath) return null;
-    return { type: 'key', keyPath };
+    const passphrase = this.getKeyPassphrase(serverId);
+    return { type: 'key', keyPath, ...(passphrase ? { passphrase } : {}) };
   }
 
   /**
@@ -408,6 +423,7 @@ export class ServerConfigManager {
         authType: server.authType || 'key',
         ...(server.keyFile && { keyFile: server.keyFile }),
         ...(server.externalKeyPath && { externalKeyPath: server.externalKeyPath }),
+        ...(server.keyPassphrase && { keyPassphrase: server.keyPassphrase }),
         ...(server.password && { password: server.password }),
         role: server.role,
         ...(server.description && { description: server.description }),
