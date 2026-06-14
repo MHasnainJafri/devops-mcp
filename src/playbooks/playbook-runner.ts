@@ -129,7 +129,7 @@ export class PlaybookRunner {
 
         if (result.success) {
           stepsCompleted++;
-          logger.info(`Step completed successfully`, { stepId: step.id });
+          logger.info('Step completed successfully', { stepId: step.id });
 
           // Run validation if provided
           if (step.validate) {

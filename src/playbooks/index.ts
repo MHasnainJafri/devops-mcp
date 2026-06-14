@@ -2,7 +2,8 @@
  * Playbooks module exports
  */
 
-export { PlaybookRunner, PlaybookRunnerOptions } from './playbook-runner.js';
+export { PlaybookRunner } from './playbook-runner.js';
+export type { PlaybookRunnerOptions } from './playbook-runner.js';
 export {
   ALL_PLAYBOOKS,
   baseSystemSetup,

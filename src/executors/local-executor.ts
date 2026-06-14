@@ -4,7 +4,7 @@
  */
 
 import { spawn } from 'child_process';
-import { CommandRequest, CommandResult, AccessMode, ExecutorConfig } from '../types/index.js';
+import { CommandRequest, CommandResult, ExecutorConfig } from '../types/index.js';
 import { BaseExecutor } from './base-executor.js';
 import { modeManager } from '../core/mode-manager.js';
 import { logger } from '../core/logger.js';
@@ -12,7 +12,7 @@ import { logger } from '../core/logger.js';
 /** POSIX shell-quote helper. See ssh-executor for the rationale. */
 function shellQuote(s: string): string {
   if (s === undefined || s === null) return "''";
-  return `'${String(s).replace(/'/g, `'\\''`)}'`;
+  return `'${String(s).replace(/'/g, '\'\\\'\'')}'`;
 }
 
 export class LocalExecutor extends BaseExecutor {

@@ -5,9 +5,20 @@
 
 import winston from 'winston';
 import { v4 as uuidv4 } from 'uuid';
+import { mkdirSync } from 'fs';
+import { dirname, join } from 'path';
+import { fileURLToPath } from 'url';
 import { AccessMode, AuditLogEntry } from '../types/index.js';
 
-const LOG_DIR = process.env.LOG_DIR || './logs';
+// Anchor the default log dir to the project root, NOT process.cwd() — MCP
+// clients (Claude Desktop etc.) launch this server from an arbitrary cwd
+// ("/" on Linux/macOS, C:\Windows\System32 on Windows), where a relative
+// ./logs is unwritable or scattered. src/core/logger.ts → project root.
+const PROJECT_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
+export const LOG_DIR = process.env.LOG_DIR || join(PROJECT_ROOT, 'logs');
+
+// Winston's File transport does not create missing directories.
+mkdirSync(LOG_DIR, { recursive: true });
 
 // Custom format for structured JSON logging
 // Default timestamp() is ISO 8601. Passing { format: 'ISO' } is wrong —
@@ -26,20 +37,20 @@ export const logger = winston.createLogger({
   transports: [
     // Error logs
     new winston.transports.File({
-      filename: `${LOG_DIR}/error.log`,
+      filename: join(LOG_DIR, 'error.log'),
       level: 'error',
       maxsize: 10 * 1024 * 1024, // 10MB
       maxFiles: 5,
     }),
     // Combined logs
     new winston.transports.File({
-      filename: `${LOG_DIR}/combined.log`,
+      filename: join(LOG_DIR, 'combined.log'),
       maxsize: 10 * 1024 * 1024,
       maxFiles: 10,
     }),
     // Audit logs (separate file for compliance)
     new winston.transports.File({
-      filename: `${LOG_DIR}/audit.log`,
+      filename: join(LOG_DIR, 'audit.log'),
       level: 'info',
       maxsize: 50 * 1024 * 1024, // 50MB for audit
       maxFiles: 20,

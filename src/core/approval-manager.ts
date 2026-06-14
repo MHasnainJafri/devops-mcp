@@ -277,7 +277,7 @@ export class ApprovalManager {
    * Clear all pending approvals (cleanup)
    */
   clearAllApprovals(): void {
-    for (const [id, timer] of approvalTimers) {
+    for (const timer of approvalTimers.values()) {
       clearTimeout(timer);
     }
     approvalTimers.clear();
@@ -297,7 +297,7 @@ export class ApprovalManager {
 
     const lines = [
       `🔐 Approval Required (${request.risk.toUpperCase()} risk)`,
-      ``,
+      '',
       `Action: ${request.action}`,
       `Description: ${request.description}`,
     ];
@@ -306,7 +306,7 @@ export class ApprovalManager {
       lines.push(`Command: ${request.command}`);
     }
 
-    lines.push(``, `Approval ID: ${approvalId}`);
+    lines.push('', `Approval ID: ${approvalId}`);
     lines.push(`Expires: ${request.expiresAt.toISOString()}`);
 
     return lines.join('\n');

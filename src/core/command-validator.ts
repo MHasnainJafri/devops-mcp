@@ -4,7 +4,6 @@
  */
 
 import { AccessMode, CommandRequest } from '../types/index.js';
-import { CommandValidationError } from '../types/errors.js';
 import { logger } from './logger.js';
 
 // Commands allowed in SAFE mode (allowlist).
@@ -744,8 +743,8 @@ export class CommandValidator {
    */
   private findEmbeddedToken(command: string, list: string[]): string | null {
     const lower = command.toLowerCase();
-    const boundary = `(^|[\\s;&|"'\`()])`;
-    const trail = `($|[\\s;&|"'\`()])`;
+    const boundary = '(^|[\\s;&|"\'`()])';
+    const trail = '($|[\\s;&|"\'`()])';
     for (const token of list) {
       const escaped = token.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       const re = new RegExp(`${boundary}${escaped}${trail}`);

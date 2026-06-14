@@ -355,6 +355,7 @@ Downgrade is always allowed and instant. Sessions auto-expire back to SAFE.
 | `configure_nginx`     | PROVISION        | Generate nginx reverse-proxy config + reload. Uses heredoc to avoid shell-quoting bugs. |
 | `deploy_app`          | varies           | Lower-level deploy primitive (git clone + build + start). All interpolated values shell-quoted. |
 | `container_action`    | SAFE / PROVISION | `start` / `stop` / `restart` / `logs` / `inspect` |
+| `transfer_files`      | SAFE (download) / varies (upload) | SFTP upload/download of files, folders (recursive), or archives. `extract: true` unpacks an uploaded `.zip`/`.tar.gz`/`.tgz`/`.tar`/`.tar.bz2`/`.tar.xz`/`.gz` on the server; `verifyChecksum: true` does end-to-end sha256 on single files. Uploads to a production-like server hit the write-gate. |
 
 ### Mode, consent, audit
 

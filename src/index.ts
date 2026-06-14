@@ -369,6 +369,29 @@ class DevOpsMCPServer {
 }
 
 /**
+ * Global crash handlers — without these, an uncaught error (e.g. a stray
+ * 'error' event on an SSH/Docker socket after the remote drops) kills the
+ * process with NOTHING written to error.log, surfacing only as Claude's
+ * "Server disconnected / process exiting early". Capture the full stack so
+ * the next crash is diagnosable. Winston's File transport flushes async, so
+ * we delay the exit briefly to let the record reach disk before dying.
+ */
+process.on('uncaughtException', (error) => {
+  logger.error('Uncaught exception — server will exit', {
+    error: error instanceof Error ? error.message : String(error),
+    stack: error instanceof Error ? error.stack : undefined,
+  });
+  setTimeout(() => process.exit(1), 250);
+});
+
+process.on('unhandledRejection', (reason) => {
+  logger.error('Unhandled promise rejection', {
+    error: reason instanceof Error ? reason.message : String(reason),
+    stack: reason instanceof Error ? reason.stack : undefined,
+  });
+});
+
+/**
  * Main entry point
  */
 async function main(): Promise<void> {

@@ -11,18 +11,17 @@ import { randomBytes } from 'crypto';
 import {
   AccessMode,
   MCPToolResponse,
-  CommandResult,
   PlaybookResult,
 } from '../types/index.js';
 import { modeManager } from '../core/mode-manager.js';
 import { approvalManager } from '../core/approval-manager.js';
 import { sshKeyManager } from '../core/ssh-key-manager.js';
 import { serverConfigManager } from '../core/server-config-manager.js';
-import { auditLogger, logger } from '../core/logger.js';
 import { LocalExecutor, SSHExecutor, DockerExecutor, BaseExecutor } from '../executors/index.js';
 import { PlaybookRunner, listPlaybooks, getPlaybookById } from '../playbooks/index.js';
 import { scanServer, diffProfile, suggestFreePort, ServerProfile } from '../core/server-scanner.js';
 import { commandValidator } from '../core/command-validator.js';
+import { LOG_DIR } from '../core/logger.js';
 import * as schemas from './tool-schemas.js';
 
 function commandValidatorMaybeRequiredMode(command: string): AccessMode {
@@ -30,7 +29,7 @@ function commandValidatorMaybeRequiredMode(command: string): AccessMode {
 }
 
 // Global executor instances
-let currentExecutor: BaseExecutor = new LocalExecutor();
+const currentExecutor: BaseExecutor = new LocalExecutor();
 let sshExecutor: SSHExecutor | null = null;
 let dockerExecutor: DockerExecutor | null = null;
 
@@ -38,7 +37,7 @@ let dockerExecutor: DockerExecutor | null = null;
 // process restarts so the "no SSH connection" error can name a sensible
 // reconnect target. Auth never lives here — it's reloaded from
 // config/<id>/ on every connect.
-const SESSION_STATE_PATH = join(process.env.LOG_DIR || 'logs', '.last-session.json');
+const SESSION_STATE_PATH = join(LOG_DIR, '.last-session.json');
 
 function rememberLastServer(serverId: string): void {
   try {
@@ -74,7 +73,7 @@ function getLastServer(): { serverId: string; at: string } | null {
 function q(value: string | number | boolean | undefined | null): string {
   if (value === undefined || value === null) return "''";
   const s = String(value);
-  return `'${s.replace(/'/g, `'\\''`)}'`;
+  return `'${s.replace(/'/g, '\'\\\'\'')}'`;
 }
 
 /**
@@ -299,7 +298,7 @@ export async function handleSetMode(
  */
 export async function handleRunCommand(
   input: z.infer<typeof schemas.RunCommandSchema>
-): Promise<MCPToolResponse<CommandResult | undefined>> {
+): Promise<MCPToolResponse> {
   let executor: BaseExecutor;
 
   switch (input.executor) {
@@ -313,7 +312,7 @@ export async function handleRunCommand(
           msg += `Last connected: "${last.serverId}" at ${last.at}. `;
           nextSteps.push(`Call connect_server { serverId: "${last.serverId}" } to reconnect, then retry this command.`);
         } else if (configured.length > 0) {
-          msg += `No previous connection on record. `;
+          msg += 'No previous connection on record. ';
           nextSteps.push(`Configured servers: ${configured.join(', ')}. Call connect_server { serverId: "<id>" } first.`);
         } else {
           msg += 'No servers configured.';
@@ -373,12 +372,50 @@ export async function handleRunCommand(
                 `Production write-gate: acknowledgeProductionWrite: true is required. The exact command that would run: ${resolvedDisplay}`,
                 [`Server "${connectedServerId}" is production-like. Ask the user to confirm this exact command before retrying.`]);
             }
-            // Destructive verbs additionally need backup confirmation.
-            const DESTRUCTIVE = /\b(rm|dd|mkfs|drop\s+(table|database)|docker\s+rm|docker\s+rmi|docker\s+volume\s+rm)\b/i;
-            if (DESTRUCTIVE.test(resolved) && !input.backupVerified) {
-              return createResponse(false, { resolvedCommand: resolvedDisplay },
-                `Production write-gate: destructive command requires backupVerified: true. The exact command that would run: ${resolvedDisplay}`,
-                ['No backup confirmation provided. Ask the user to verify a backup/snapshot exists before retrying.']);
+            // Truly catastrophic verbs additionally need backupVerified.
+            // The bar here is "irrecoverable without a backup" — NOT "writes
+            // something." `acknowledgeProductionWrite` is the gate for the
+            // general write case; backupVerified is reserved for ops where
+            // data loss is the only outcome on failure.
+            //
+            // Matched: rm of paths OUTSIDE /tmp /var/tmp /dev/shm, dd to a
+            // device, mkfs, SQL DROP, docker rmi / volume rm / system prune,
+            // and docker rm -v / --volumes (volume removal is irrecoverable).
+            //
+            // NOT matched: rm of tmp paths (cleanup), bare docker rm (the
+            // container can be recreated from the image), git reset --hard,
+            // file overwrites.
+            const CATASTROPHIC: RegExp[] = [
+              // rm of paths outside tmp dirs (rm -rf /etc, rm /var/log/x, etc.)
+              /\brm\b\s+(?:-\S+\s+)*\/(?!tmp\b|var\/tmp\b|dev\/shm\b|dev\/null\b)\S/i,
+              // rm -rf with trailing / or *
+              /\brm\s+-[rfRF]+\s+\/(?!tmp\b|var\/tmp\b|dev\/shm\b)\S*/i,
+              // dd to a device target
+              /\bdd\b[^|]*\bof=\/dev\//i,
+              // Format a filesystem
+              /\bmkfs(\.\w+)?\b/i,
+              // SQL drops
+              /\bdrop\s+(table|database|schema)\b/i,
+              // Container image removal (image is the artifact, can't be rebuilt without source)
+              /\bdocker\s+rmi\b/i,
+              // Volume removal — volume data is irrecoverable
+              /\bdocker\s+volume\s+rm\b/i,
+              /\bdocker\s+rm\b[^|]*\s(-v|--volumes)\b/i,
+              // System-wide prune
+              /\bdocker\s+system\s+prune\b/i,
+              /\bdocker\s+volume\s+prune\b/i,
+            ];
+            const matched = CATASTROPHIC.find(re => re.test(resolved));
+            if (matched && !input.backupVerified) {
+              return createResponse(
+                false,
+                { resolvedCommand: resolvedDisplay, matchedPattern: matched.toString() },
+                `Production write-gate: catastrophic command requires backupVerified: true. The exact command that would run: ${resolvedDisplay}`,
+                [
+                  `Matched catastrophic pattern: ${matched.toString()}`,
+                  'This op is irrecoverable without a backup. Ask the user to verify a backup/snapshot exists before retrying.',
+                ]
+              );
             }
           }
         }
@@ -489,7 +526,7 @@ export async function handleAddServer(
       if (!detected) {
         return createResponse(false, undefined,
           `useExistingKey: true, but no key found in ${join(homedir(), '.ssh')}. ` +
-          `Generate one (\`ssh-keygen -t ed25519\`) or pass externalKeyPath / keyFilePath.`);
+          'Generate one (`ssh-keygen -t ed25519`) or pass externalKeyPath / keyFilePath.');
       }
       resolvedExternalPath = detected;
     } else if (input.externalKeyPath) {
@@ -635,7 +672,7 @@ export async function handleAddServer(
   } else {
     nextSteps.push(
       `Use connect_server with serverId: "${input.id}" when the user is ready to start working on it.`,
-      `After connecting, run scan_server to build a server profile.`,
+      'After connecting, run scan_server to build a server profile.',
     );
   }
 
@@ -942,7 +979,7 @@ export async function handleUpdateServerCredentials(
     warnings.push('Literal password stored in server.json. Consider using "$YOUR_ENV_VAR" instead.');
   }
   if (result.testResult && !result.testResult.success) {
-    warnings.push(`⚠️ Connection test FAILED after the rotation. The new credentials may be wrong, or the server may be unreachable. Investigate before continuing.`);
+    warnings.push('⚠️ Connection test FAILED after the rotation. The new credentials may be wrong, or the server may be unreachable. Investigate before continuing.');
   }
 
   return createResponse(
@@ -1188,7 +1225,7 @@ export async function handleConnectServer(
       [
         `1. STOP. Ask the user a direct question: "You're currently connected to '${existingId}'. Switch to '${input.serverId}' or stay on '${existingId}'?"`,
         `2. Only after the user confirms a switch: call connect_server { serverId: "${input.serverId}", replaceExisting: true }, OR call disconnect_server first.`,
-        `3. Do NOT infer the user wants to switch just because they mentioned the other server or just added it.`,
+        '3. Do NOT infer the user wants to switch just because they mentioned the other server or just added it.',
       ]
     );
   }
@@ -1376,7 +1413,7 @@ export async function handleConfigureNginx(
   if (!Number.isInteger(input.upstreamPort) || input.upstreamPort < 1 || input.upstreamPort > 65535) {
     return createResponse(false, undefined, `Invalid upstreamPort: ${input.upstreamPort}`);
   }
-  if (input.sslEmail && !/^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$/.test(input.sslEmail)) {
+  if (input.sslEmail && !/^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/.test(input.sslEmail)) {
     return createResponse(false, undefined, `Invalid sslEmail: ${input.sslEmail}`);
   }
 
@@ -1450,7 +1487,7 @@ export async function handleDeployApp(
 
   try {
     // Sanity-check branch and env keys; everything else gets shell-quoted.
-    if (!/^[A-Za-z0-9._\/\-]+$/.test(input.branch)) {
+    if (!/^[A-Za-z0-9._/-]+$/.test(input.branch)) {
       return createResponse(false, undefined, `Invalid branch name: ${input.branch}`);
     }
     if (input.env) {
@@ -1497,7 +1534,7 @@ export async function handleDeployApp(
         command: `cd ${q(input.targetPath)} && docker build -t app -f ${q(dockerFile)} .`,
       });
       await executor.execute({
-        command: `docker stop app-container || true && docker rm app-container || true`,
+        command: 'docker stop app-container || true && docker rm app-container || true',
       });
 
       let envFlags = '';
@@ -1579,17 +1616,19 @@ export async function handleContainerAction(
         await dockerExecutor.restartContainer(input.containerId);
         result = { action: 'restarted', containerId: input.containerId };
         break;
-      case 'logs':
+      case 'logs': {
         const logs = await dockerExecutor.getContainerLogs(input.containerId, { tail: input.tail });
         result = { logs, containerId: input.containerId };
         break;
-      case 'inspect':
+      }
+      case 'inspect': {
         const executor = new LocalExecutor();
         const inspectResult = await executor.execute({
           command: `docker inspect ${input.containerId}`,
         });
         result = { inspect: JSON.parse(inspectResult.stdout), containerId: input.containerId };
         break;
+      }
     }
 
     return createResponse(true, result);
@@ -1801,8 +1840,7 @@ export async function handleRevokeSSHKey(
 export async function handleGetAuditLog(
   input: z.infer<typeof schemas.GetAuditLogSchema>
 ): Promise<MCPToolResponse> {
-  const logDir = process.env.LOG_DIR || './logs';
-  const auditPath = join(logDir, 'audit.log');
+  const auditPath = join(LOG_DIR, 'audit.log');
 
   if (!existsSync(auditPath)) {
     return createResponse(true, { entries: [], count: 0 }, undefined, [
@@ -1938,7 +1976,7 @@ export async function handleDiffServerProfile(
   }
   const prev = serverConfigManager.loadProfile(serverId) as ServerProfile | null;
   if (!prev) {
-    return createResponse(false, undefined, `No prior profile to diff against. Run scan_server first.`);
+    return createResponse(false, undefined, 'No prior profile to diff against. Run scan_server first.');
   }
   const cfg = serverConfigManager.getServer(serverId);
   const next = await scanServer(sshExecutor, serverId, cfg?.role);
@@ -2011,10 +2049,10 @@ export async function handlePlanDeployment(
     return createResponse(false, undefined, `No profile for "${input.serverId}". Run scan_server first.`);
   }
 
-  if (!/^[A-Za-z0-9._\-]+$/.test(input.projectName)) {
+  if (!/^[A-Za-z0-9._-]+$/.test(input.projectName)) {
     return createResponse(false, undefined, `Invalid projectName: ${input.projectName}`);
   }
-  if (!/^[A-Za-z0-9._\/\-]+$/.test(input.branch)) {
+  if (!/^[A-Za-z0-9._/-]+$/.test(input.branch)) {
     return createResponse(false, undefined, `Invalid branch: ${input.branch}`);
   }
 
@@ -2062,9 +2100,9 @@ export async function handlePlanDeployment(
   } else if (input.runtime === 'docker') {
     lines.push(
       'cd "$TARGET"',
-      `docker build -t "$PROJECT:latest" .`,
-      `docker stop "$PROJECT" 2>/dev/null || true`,
-      `docker rm "$PROJECT" 2>/dev/null || true`,
+      'docker build -t "$PROJECT:latest" .',
+      'docker stop "$PROJECT" 2>/dev/null || true',
+      'docker rm "$PROJECT" 2>/dev/null || true',
       `docker run -d --name "$PROJECT" --restart unless-stopped -p ${input.port}:${input.port} "$PROJECT:latest"`,
     );
   } else if (input.runtime === 'python') {
@@ -2106,6 +2144,126 @@ export async function handlePlanDeployment(
   );
 }
 
+/**
+ * Human-readable byte size for transfer summaries.
+ */
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  const units = ['KB', 'MB', 'GB', 'TB'];
+  let v = n / 1024;
+  let i = 0;
+  while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+  return `${v.toFixed(v >= 100 ? 0 : 1)} ${units[i]}`;
+}
+
+/**
+ * transfer_files handler — SFTP upload/download of files, folders, and archives.
+ *
+ * Requires an active SSH session (connect_server). Uploads write to the remote
+ * host, so they pass through the same production write-gate as run_command:
+ * a production-like target needs consentToken + acknowledgeProductionWrite.
+ * Downloads only read the remote, so they are ungated.
+ */
+export async function handleTransferFiles(
+  input: z.infer<typeof schemas.TransferFilesSchema>
+): Promise<MCPToolResponse> {
+  if (!sshExecutor) {
+    const last = getLastServer();
+    const nextSteps = last
+      ? [`Reconnect with connect_server { serverId: "${last.serverId}" }, then retry the transfer.`]
+      : ['Connect first: list_servers → connect_server { serverId: "<id>" }.'];
+    return createResponse(false, { lastConnectedServerId: last?.serverId }, 'No SSH connection. transfer_files needs an active session.', [], nextSteps);
+  }
+
+  const connectedServerId = (sshExecutor as any).connectedServerId as string | undefined;
+  const isUpload = input.direction === 'upload';
+
+  // --- production write-gate (uploads only) ---
+  if (isUpload && connectedServerId) {
+    const currentMode = modeManager.getCurrentMode();
+    if (!serverConfigManager.isModeAllowed(connectedServerId, currentMode)) {
+      return createResponse(false, undefined,
+        `Mode "${currentMode}" not allowed on server "${connectedServerId}". Allowed: ${serverConfigManager.getServer(connectedServerId)?.restrictions.allowedModes.join(', ')}`);
+    }
+
+    const profile = serverConfigManager.loadProfile(connectedServerId) as any | null;
+    const cfg = serverConfigManager.getServer(connectedServerId);
+    const isProductionLike = (cfg?.role === 'production') || !!profile?.productionLikely;
+
+    if (isProductionLike) {
+      const consentError = checkConsent(input.consentToken);
+      if (consentError) {
+        return createResponse(false, { remotePath: input.remotePath },
+          `Production write-gate: ${consentError}`,
+          [
+            `Server "${connectedServerId}" is production-like. This upload would write:`,
+            `    ${input.localPath} → ${input.remotePath}`,
+            'Ask the user to approve and provide consentToken before retrying.',
+          ]);
+      }
+      if (!input.acknowledgeProductionWrite) {
+        return createResponse(false, { remotePath: input.remotePath },
+          `Production write-gate: acknowledgeProductionWrite: true is required to upload to "${connectedServerId}".`,
+          [`Ask the user to confirm: upload ${input.localPath} → ${input.remotePath} on production server "${connectedServerId}".`]);
+      }
+    }
+  }
+
+  try {
+    let result;
+
+    if (isUpload) {
+      if (!existsSync(input.localPath)) {
+        return createResponse(false, undefined, `Local path does not exist: ${input.localPath}`);
+      }
+      result = await sshExecutor.uploadPath(input.localPath, input.remotePath, {
+        extract: input.extract,
+        verifyChecksum: input.verifyChecksum,
+        overwrite: input.overwrite,
+      });
+    } else {
+      result = await sshExecutor.downloadPath(input.remotePath, input.localPath, {
+        verifyChecksum: input.verifyChecksum,
+        overwrite: input.overwrite,
+      });
+    }
+
+    const warnings: string[] = [];
+    if (input.verifyChecksum && !result.isDirectory && result.checksum && !result.checksum.match) {
+      warnings.push(`⚠️ Checksum MISMATCH — source and destination differ. local=${result.checksum.localHash.slice(0, 12)}… remote=${result.checksum.remoteHash.slice(0, 12)}…`);
+    }
+    if (input.verifyChecksum && result.isDirectory) {
+      warnings.push('verifyChecksum is ignored for directory transfers (only single files are hashed).');
+    }
+    if (input.extract && !isUpload) {
+      warnings.push('extract is ignored for downloads (it only unpacks on the remote after an upload).');
+    }
+
+    const summary = `${isUpload ? 'Uploaded' : 'Downloaded'} ${result.filesTransferred} file(s), ${formatBytes(result.bytesTransferred)} ${isUpload ? '→' : '←'} ${result.root}`;
+
+    const nextSteps: string[] = [summary];
+    if (result.extracted) {
+      nextSteps.push(`Extracted ${result.extracted.archive} into ${result.extracted.into} using ${result.extracted.tool}.`);
+    }
+
+    return createResponse(
+      result.checksum ? (result.checksum.match || result.isDirectory) : true,
+      {
+        ...result,
+        serverId: connectedServerId ?? null,
+        humanReadableSize: formatBytes(result.bytesTransferred),
+        filesListTruncated: result.filesTransferred > result.files.length,
+      },
+      undefined,
+      warnings,
+      nextSteps
+    );
+  } catch (error) {
+    return createResponse(false, { remotePath: input.remotePath, localPath: input.localPath },
+      error instanceof Error ? error.message : 'File transfer failed');
+  }
+}
+
 // Export handler map
 export const TOOL_HANDLERS: Record<string, (input: any) => Promise<MCPToolResponse>> = {
   health_check: handleHealthCheck,
@@ -2139,6 +2297,7 @@ export const TOOL_HANDLERS: Record<string, (input: any) => Promise<MCPToolRespon
   diff_server_profile: handleDiffServerProfile,
   check_port_conflict: handleCheckPortConflict,
   plan_deployment: handlePlanDeployment,
+  transfer_files: handleTransferFiles,
 };
 
 export default TOOL_HANDLERS;

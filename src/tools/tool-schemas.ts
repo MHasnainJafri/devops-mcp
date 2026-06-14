@@ -4,7 +4,6 @@
  */
 
 import { z } from 'zod';
-import { AccessMode } from '../types/index.js';
 
 // ============================================
 // COMMON SCHEMAS
@@ -368,6 +367,32 @@ export const PlanDeploymentSchema = z.object({
   acknowledgeConflict: z.boolean().default(false).describe('Required if the port is already in use'),
 });
 
+/**
+ * transfer_files - Upload or download files, folders, or archives between the
+ * local machine and the connected SSH server over SFTP (no shell piping).
+ * Folders are walked recursively. Archives can be auto-extracted on the remote
+ * after upload. Optional sha256 integrity verification for single files.
+ */
+export const TransferFilesSchema = z.object({
+  direction: z.enum(['upload', 'download']).default('upload')
+    .describe('upload: local → server. download: server → local.'),
+  localPath: z.string()
+    .describe('Path on this machine. Source for upload, destination for download.'),
+  remotePath: z.string()
+    .describe('Path on the connected server. Destination for upload, source for download. May be a file, folder, or archive.'),
+  extract: z.boolean().default(false)
+    .describe('Upload only: after uploading an archive (.zip/.tar.gz/.tgz/.tar.bz2/.tar.xz/.tar/.gz), extract it on the server into the archive\'s directory. Needs tar/unzip on the remote.'),
+  verifyChecksum: z.boolean().default(false)
+    .describe('Single-file transfers only: compare sha256 of source and destination after transfer and report whether they match.'),
+  overwrite: z.boolean().default(true)
+    .describe('If false, refuse the transfer when the destination already exists instead of overwriting it.'),
+  // Production write-gate (uploads are server writes), mirrors run_command.
+  consentToken: z.string().optional()
+    .describe('Out-of-band elevation token. Required to UPLOAD to a production-like server.'),
+  acknowledgeProductionWrite: z.boolean().optional()
+    .describe('Set true to confirm an upload that writes to a production-like server.'),
+});
+
 // ============================================
 // TOOL DEFINITIONS FOR MCP
 // ============================================
@@ -527,6 +552,11 @@ export const TOOL_DEFINITIONS = [
     name: 'plan_deployment',
     description: 'Generate an idempotent bash setup script for a new project on a server. Refuses if the requested port is already in use unless acknowledgeConflict is true. Returns the script for the user to review — it is NOT executed.',
     inputSchema: PlanDeploymentSchema,
+  },
+  {
+    name: 'transfer_files',
+    description: 'Transfer files, folders, or archives between this machine and the connected SSH server over SFTP. direction: "upload" (local→server) or "download" (server→local). Folders are copied recursively. With extract: true an uploaded archive (.zip/.tar.gz/.tgz/.tar.bz2/.tar.xz/.tar/.gz) is unpacked on the server. With verifyChecksum: true a single file\'s sha256 is compared end-to-end. Requires an active connect_server session. Uploading to a production-like server requires consentToken + acknowledgeProductionWrite.',
+    inputSchema: TransferFilesSchema,
   },
 ];
 

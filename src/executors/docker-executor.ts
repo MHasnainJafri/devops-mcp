@@ -3,13 +3,12 @@
  * Executes commands inside Docker containers
  */
 
-// @ts-ignore - dockerode types may not be installed
 import Docker from 'dockerode';
-import { CommandRequest, CommandResult, ExecutorConfig, AccessMode } from '../types/index.js';
+import { Writable } from 'stream';
+import { CommandRequest, CommandResult, ExecutorConfig } from '../types/index.js';
 import { BaseExecutor } from './base-executor.js';
 import { modeManager } from '../core/mode-manager.js';
 import { logger } from '../core/logger.js';
-import { MCPError } from '../types/errors.js';
 
 export interface DockerExecutorConfig extends Partial<ExecutorConfig> {
   containerId?: string;
@@ -87,9 +86,10 @@ export class DockerExecutor extends BaseExecutor {
 
       return new Promise((resolve) => {
         // Docker multiplexes stdout and stderr
-        this.docker.modem.demuxStream(stream, 
-          { write: (chunk: Buffer) => { stdout += chunk.toString(); } },
-          { write: (chunk: Buffer) => { stderr += chunk.toString(); } }
+        this.docker.modem.demuxStream(
+          stream,
+          new Writable({ write(chunk, _enc, cb) { stdout += chunk.toString(); cb(); } }),
+          new Writable({ write(chunk, _enc, cb) { stderr += chunk.toString(); cb(); } })
         );
 
         stream.on('end', async () => {

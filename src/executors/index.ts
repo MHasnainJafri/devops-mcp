@@ -4,8 +4,10 @@
 
 export { BaseExecutor } from './base-executor.js';
 export { LocalExecutor } from './local-executor.js';
-export { SSHExecutor, SSHExecutorConfig } from './ssh-executor.js';
-export { DockerExecutor, DockerExecutorConfig } from './docker-executor.js';
+export { SSHExecutor } from './ssh-executor.js';
+export type { SSHExecutorConfig } from './ssh-executor.js';
+export { DockerExecutor } from './docker-executor.js';
+export type { DockerExecutorConfig } from './docker-executor.js';
 
 import { ExecutorType, SSHConfig } from '../types/index.js';
 import { LocalExecutor } from './local-executor.js';

@@ -3,7 +3,7 @@
  * Abstract class for all execution backends (SSH, Local, Docker)
  */
 
-import { CommandRequest, CommandResult, AccessMode, ExecutorConfig } from '../types/index.js';
+import { CommandRequest, CommandResult, ExecutorConfig } from '../types/index.js';
 import { ExecutionTimeoutError } from '../types/errors.js';
 import { auditLogger, logger } from '../core/logger.js';
 import { commandValidator } from '../core/command-validator.js';
